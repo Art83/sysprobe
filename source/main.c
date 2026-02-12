@@ -22,7 +22,7 @@ double now_sec(struct timespec *start){
 	struct timespec t;
 	clock_gettime(CLOCK_MONOTONIC,&t);
 	return(t.tv_sec - start->tv_sec)
-		+ (t.tv_nsec - start->tv_nsec)/1e9/1e9/1e9/1e9/1e9/1e9/1e9/1e9/1e9;
+		+ (t.tv_nsec - start->tv_nsec)/1e9;
 }
 
 
@@ -30,18 +30,28 @@ double now_sec(struct timespec *start){
 int main(int argc, char *argv[]){
 	struct cpu_capacity cap;
 	read_cpu_capacity(&cap);
-	printf("CPU: %d cores", cap.cores);
-	if(cap.max_freq_khz > 0){
-		printf(", max freq %.2f GHz\n",
-				cap.max_freq_khz / 1000000.0);
-	}
 	mem_stat mem;
 	read_mem_stat(&mem);
-	printf("MemTotal:%.2f Gb\nMemAvail:%.2f Gb\nSwapTotal:%.2f Gb\nSwapAvail:%.2f Gb\n",
-			mem.mem_total_kb/1024.0/1024.0, 
-			mem.mem_avail_kb/1024.0/1024.0, 
-			mem.swap_total_kb/1024.0/1024.0, 
-			mem.swap_free_kb/1024.0/1024.0);
+	printf("{"
+    		"\"type\":\"meta\","
+    		"\"schema\":1,"
+    		"\"interval_s\":%.3f,"
+    		"\"cores\":%d,"
+    		"\"max_freq_ghz\":%.3f,"
+    		"\"mem_total_gb\":%.2f,"
+		"\"mem_avail_gb\":%.2f,"
+    		"\"swap_total_gb\":%.2f,"
+		"\"swap_free_gb\":%.2f,"
+    		"\"units\":{\"mem\":\"GB\",\"swap\":\"GB\",\"ts\":\"s\"}"
+    		"}\n",
+		1.0, //--interval to be replaced
+		cap.cores,
+		(cap.max_freq_khz > 0 ? cap.max_freq_khz / 1000000.0:-1),
+		mem.mem_total_kb/1024.0/1024.0, 
+		mem.mem_avail_kb/1024.0/1024.0, 
+		mem.swap_total_kb/1024.0/1024.0, 
+		mem.swap_free_kb/1024.0/1024.0
+		);
 
 	signal(SIGINT, handle_sigint);
 	
@@ -56,6 +66,9 @@ int main(int argc, char *argv[]){
 
 	struct timespec start;
 	clock_gettime(CLOCK_MONOTONIC, &start);
+	sys_state prev_cpu_state = SYS_OK;
+	sys_state prev_mem_state = SYS_OK;
+	int have_prev_state = 0;
 
 	while (running) {
 		sleep(1);
@@ -68,33 +81,68 @@ int main(int argc, char *argv[]){
 		read_mem_stat(&mem);
 
 		double avg_cpu = cpu_window_avg(&cpu_win);
-
 		sys_state cpu_state = cpu_state_from_avg(avg_cpu);
         	sys_state mem_state = mem_state_from_capacity(&mem);
-		float t = now_sec(&start);
+		double t = now_sec(&start);
+		if(!have_prev_state){
+			prev_cpu_state = cpu_state;
+			prev_mem_state = mem_state;
+			have_prev_state = 1;
+			
+		} else if (cpu_state != prev_cpu_state || mem_state != prev_mem_state){
+			printf(
+            			"{"
+				"\"type\":\"event\","
+				"\"event\":\"state_change\","
+            			"\"ts\":%.3f,"
+            			"\"cpu\":%.2f,"
+            			"\"cpu_avg\":%.2f,"
+				"\"mem_used\":%.2f,"
+				"\"mem_avail\":%.2f,"
+				"\"mem_swap_used\":%.2f,"
+				"\"mem_swap_avail\":%.2f,"
+            			"\"CPU_STATE\":\"%s\","
+            			"\"MEM_STATE\":\"%s\""
+            			"}\n",
+            			t,
+            			usage,
+            			avg_cpu,
+				(mem.mem_total_kb - mem.mem_avail_kb)/1024.0/1024.0,
+				mem.mem_avail_kb/1024.0/1024.0,
+				(mem.swap_total_kb - mem.swap_free_kb)/1024.0/1024.0,
+				mem.swap_free_kb/1024.0/1024.0,
+            			sys_state_str(cpu_state),
+            			sys_state_str(mem_state)
+        			);
 
-		printf(
-            		"{"
-            		"\"ts\":%.0f,"
-            		"\"cpu\":%.2f,"
-            		"\"cpu_avg\":%.2f,"
-			"\"mem_used\":%.2f,"
-			"\"mem_avail\":%.2f,"
-			"\"mem_swap_used\":%.2f,"
-			"\"mem_swap_avail\":%.2f, "
-            		"\"CPU_STATE\":\"%s\","
-            		"\"MEM_STATE\":\"%s\""
-            		"}\n",
-            		t,
-            		usage,
-            		avg_cpu,
-			(mem.mem_total_kb - mem.mem_avail_kb)/1024.0/1024.0,
-			mem.mem_avail_kb/1024.0/1024.0,
-			(mem.swap_total_kb - mem.swap_free_kb)/1024.0/1024.0,
-			mem.swap_free_kb/1024.0,
-            		sys_state_str(cpu_state),
-            		sys_state_str(mem_state)
-        		);
+			prev_cpu_state = cpu_state;
+			prev_mem_state = mem_state;
+		}
+
+			printf(
+				"{"
+				"\"type\":\"sample\","
+            			"\"ts\":%.3f,"
+            			"\"cpu\":%.2f,"
+            			"\"cpu_avg\":%.2f,"
+				"\"mem_used\":%.2f,"
+				"\"mem_avail\":%.2f,"
+				"\"mem_swap_used\":%.2f,"
+				"\"mem_swap_avail\":%.2f,"
+            			"\"CPU_STATE\":\"%s\","
+            			"\"MEM_STATE\":\"%s\""
+            			"}\n",
+            			t,
+            			usage,
+            			avg_cpu,
+				(mem.mem_total_kb - mem.mem_avail_kb)/1024.0/1024.0,
+				mem.mem_avail_kb/1024.0/1024.0,
+				(mem.swap_total_kb - mem.swap_free_kb)/1024.0/1024.0,
+				mem.swap_free_kb/1024.0/1024.0,
+            			sys_state_str(cpu_state),
+            			sys_state_str(mem_state)
+        			);
+
 
         	fflush(stdout);
 
